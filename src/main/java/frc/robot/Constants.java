@@ -4,8 +4,12 @@
 
 package frc.robot;
 
+import java.util.HashMap;
+
 import com.pathplanner.lib.util.PIDConstants;
 
+import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Translation3d;
 import edu.wpi.first.math.util.Units;
 import swervelib.math.Matter;
@@ -29,9 +33,39 @@ public final class Constants
 
   public static final class AutonConstants
   {
+    public static final PIDConstants TRANSLATION_PID = new PIDConstants(0.7, 0.0, 0.0);
+    public static final PIDConstants ANGLE_PID       = new PIDConstants(.4, 0.0, 0.0);
 
-    public static final PIDConstants TRANSLATION_PID = new PIDConstants(0.7, 0, 0);
-    public static final PIDConstants ANGLE_PID       = new PIDConstants(.4, 0, 0.01);
+    private static final String[] labels = {
+      "bleu 1",
+      "bleu 2",
+      "bleu 3",
+      "rouge 1",
+      "rouge 2",
+      "rouge 3"
+    };
+    private static final Pose2d[] initialPositions = {
+      new Pose2d(7.6, 2, new Rotation2d(180)),
+      new Pose2d(7.6, 4, new Rotation2d(180)),
+      new Pose2d(7.6, 6, new Rotation2d(180)),
+      new Pose2d(10, 2, new Rotation2d(0)),
+      new Pose2d(10, 4, new Rotation2d(0)),
+      new Pose2d(10, 6, new Rotation2d(0))
+    };
+
+    public static final HashMap<String, Pose2d> initialPositionsByLabels = new HashMap<>();
+    static{
+      for(int i = 0; i<6; i++)initialPositionsByLabels.put(labels[i], initialPositions[i]); 
+    }
+  }
+
+  public static final class CameraConstants
+  {
+    public static final String nome = "limelight-one";
+
+    public static final double kpAim = 0.035;
+
+    public static final double kpRange = 0.01;
   }
 
   public static final class DrivebaseConstants
@@ -43,8 +77,9 @@ public final class Constants
 
   public static class OperatorConstants
   {
+    public static final double integralLimit = 0.3;
 
-    public static final double limit = 0.4;
+    public static double limit = 0.3;
     // Joystick Deadband
     public static final double LEFT_X_DEADBAND  = 0.1;
     public static final double LEFT_Y_DEADBAND  = 0.1;

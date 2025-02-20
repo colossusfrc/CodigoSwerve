@@ -6,7 +6,6 @@ package frc.robot.subsystems.swervedrive;
 
 import java.io.File;
 import java.util.Arrays;
-import java.util.function.DoubleSupplier;
 
 import org.photonvision.PhotonCamera;
 import org.photonvision.targeting.PhotonPipelineResult;
@@ -27,28 +26,34 @@ import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.math.kinematics.SwerveDriveKinematics;
+import edu.wpi.first.math.kinematics.SwerveModuleState;
 import edu.wpi.first.math.trajectory.Trajectory;
 import edu.wpi.first.math.util.Units;
+import edu.wpi.first.networktables.NetworkTableInstance;
+import edu.wpi.first.networktables.StructArrayPublisher;
 import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.DriverStation.Alliance;
-import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine.Config;
 import frc.robot.Constants;
 import frc.robot.Constants.AutonConstants;
+import frc.robot.Constants.CameraConstants;
+import frc.robot.Constants.OperatorConstants;
 import swervelib.SwerveController;
 import swervelib.SwerveDrive;
 import swervelib.SwerveDriveTest;
 import swervelib.math.SwerveMath;
-import swervelib.parser.PIDFConfig;
 import swervelib.parser.SwerveControllerConfiguration;
 import swervelib.parser.SwerveDriveConfiguration;
 import swervelib.parser.SwerveParser;
 import swervelib.telemetry.SwerveDriveTelemetry;
 import swervelib.telemetry.SwerveDriveTelemetry.TelemetryVerbosity;
+
+import java.util.function.*;
 
 public class SwerveSubsystem extends SubsystemBase
 {
@@ -56,7 +61,7 @@ public class SwerveSubsystem extends SubsystemBase
   /**
    * PhotonVision class to keep an accurate odometry.
    */
-  private       Vision  vision;
+  private       Vision              vision;
   /**
    * Swerve drive object.
    */
@@ -70,11 +75,76 @@ public class SwerveSubsystem extends SubsystemBase
    */
   private final boolean visionDriveTest = false;
 
+  private final StructArrayPublisher<SwerveModuleState> publisher = NetworkTableInstance
+                                                        .getDefault()
+                                                        .getStructArrayTopic("MyStates", SwerveModuleState.struct)
+                                                        .publish();
+  
+  private final BooleanSupplier booleanSupplier;
+
+  private boolean toggler = true, debouncer = false;
+
+  private final Consumer<Boolean> toggle;
+
   /**
    * Initialize {@link SwerveDrive} with the directory provided.
    *
    * @param directory Directory of swerve drive config files.
    */
+  public SwerveSubsystem(File directory, BooleanSupplier booleanSupplier){
+    // Angle conversion factor is 360 / (GEAR RATIO * ENCODER RESOLUTION)
+    //  In this case the gear ratio is 12.8 motor revolutions per wheel rotation.
+    //  The encoder resolution per motor revolution is 1 per motor revolution.
+    double angleConversionFactor = SwerveMath.calculateDegreesPerSteeringRotation(12.8);
+    // Motor conversion factor is (PI * WHEEL DIAMETER IN METERS) / (GEAR RATIO * ENCODER RESOLUTION).
+    //  In this case the wheel diameter is 4 inches, which must be converted to meters to get meters/second.
+    //  The gear ratio is 6.75 motor revolutions per wheel rotation.
+    //  The encoder resolution per motor revolution is 1 per motor revolution.
+    double driveConversionFactor = SwerveMath.calculateMetersPerRotation(Units.inchesToMeters(4), 6.75);
+    
+    System.out.println("\"conversionFactors\": {");
+    System.out.println("\t\"angle\": {\"factor\": " + angleConversionFactor + " },");
+    System.out.println("\t\"drive\": {\"factor\": " + driveConversionFactor + " }");
+    System.out.println("}");
+
+    // Configure the Telemetry before creating the SwerveDrive to avoid unnecessary objects being created.
+    SwerveDriveTelemetry.verbosity = TelemetryVerbosity.HIGH;
+    try
+    {
+      swerveDrive = new SwerveParser(directory).createSwerveDrive(Constants.MAX_SPEED);
+      // Alternative method if you don't want to supply the conversion factor via JSON files.
+      // swerveDrive = new SwerveParser(directory).createSwerveDrive(maximumSpeed, angleConversionFactor, driveConversionFactor);
+    } catch (Exception e)
+    {
+      throw new RuntimeException(e);
+    }
+    swerveDrive.setHeadingCorrection(false); // Heading correction should only be used while controlling the robot via angle.
+    swerveDrive.setCosineCompensator(false);//!SwerveDriveTelemetry.isSimulation); // Disables cosine compensation for simulations since it causes discrepancies not seen in real life.
+    swerveDrive.setAngularVelocityCompensation(true,
+                                               true,
+                                               0.1); //Correct for skew that gets worse as angular velocity increases. Start with a coefficient of 0.1.
+    swerveDrive.setModuleEncoderAutoSynchronize(false,
+                                                1); // Enable if you want to resynchronize your absolute encoders and motor encoders periodically when they are not moving.
+    swerveDrive.pushOffsetsToEncoders(); // Set the absolute encoder to be used over the internal encoder and push the offsets onto it. Throws warning if not possible
+    if (visionDriveTest)
+    {
+      setupPhotonVision();
+      // Stop the odometry thread if we are using vision that way we can synchronize updates better.
+      swerveDrive.stopOdometryThread();
+    }
+    setupPathPlanner();
+
+    this.booleanSupplier = booleanSupplier;
+
+    this.toggle = (b)->{
+      boolean pressed = booleanSupplier.getAsBoolean();
+            if(pressed&&!debouncer){
+              toggler = !toggler;
+            }
+            debouncer = pressed;
+    };
+    
+  }
   public SwerveSubsystem(File directory)
   {
     // Angle conversion factor is 360 / (GEAR RATIO * ENCODER RESOLUTION)
@@ -103,7 +173,7 @@ public class SwerveSubsystem extends SubsystemBase
     {
       throw new RuntimeException(e);
     }
-    swerveDrive.setHeadingCorrection(true); // Heading correction should only be used while controlling the robot via angle.
+    swerveDrive.setHeadingCorrection(false); // Heading correction should only be used while controlling the robot via angle.
     swerveDrive.setCosineCompensator(false);//!SwerveDriveTelemetry.isSimulation); // Disables cosine compensation for simulations since it causes discrepancies not seen in real life.
     swerveDrive.setAngularVelocityCompensation(true,
                                                true,
@@ -118,6 +188,10 @@ public class SwerveSubsystem extends SubsystemBase
       swerveDrive.stopOdometryThread();
     }
     setupPathPlanner();
+
+    this.booleanSupplier = null;
+
+    this.toggle = null;
   }
 
   /**
@@ -129,6 +203,10 @@ public class SwerveSubsystem extends SubsystemBase
   public SwerveSubsystem(SwerveDriveConfiguration driveCfg, SwerveControllerConfiguration controllerCfg)
   {
     swerveDrive = new SwerveDrive(driveCfg, controllerCfg, Constants.MAX_SPEED);
+
+    this.booleanSupplier = null;
+
+    this.toggle = null;
   }
 
   /**
@@ -140,15 +218,34 @@ public class SwerveSubsystem extends SubsystemBase
   }
 
   @Override
-  public void periodic()
-  {
-    // When vision is enabled we must manually update odometry in SwerveDrive
-    if (visionDriveTest)
-    {
-      swerveDrive.updateOdometry();
-      vision.updatePoseEstimation(swerveDrive);
+  public void periodic() {
+    toggle.accept(booleanSupplier.getAsBoolean());
+
+    if (visionDriveTest) {
+        swerveDrive.updateOdometry();
+        vision.updatePoseEstimation(swerveDrive);
     }
-  }
+
+    publisher.set(this.swerveDrive.getStates());
+
+    SmartDashboard.putNumber("tx", limelightRange());
+    SmartDashboard.putNumber("ty", limelightAim());
+
+    if (toggler && !debouncer) {
+        OperatorConstants.limit -=  0;
+        debouncer = true;
+    }
+
+    if (!booleanSupplier.getAsBoolean()) {
+        debouncer = false; 
+    }
+
+    if (OperatorConstants.limit <= 0) {
+        OperatorConstants.limit = OperatorConstants.integralLimit;
+    }
+}
+
+
 
   @Override
   public void simulationPeriodic()
@@ -432,8 +529,20 @@ public class SwerveSubsystem extends SubsystemBase
       swerveDrive.drive(SwerveMath.scaleTranslation(new Translation2d(
                             translationX.getAsDouble() * swerveDrive.getMaximumVelocity(),
                             translationY.getAsDouble() * swerveDrive.getMaximumVelocity()), 0.8),
-                        Math.pow(angularRotationX.getAsDouble(), 3) * swerveDrive.getMaximumAngularVelocity(),
+                        Math.pow(angularRotationX.getAsDouble(), 1) * swerveDrive.getMaximumAngularVelocity(),
                         true,
+                        false);
+    });
+  }
+  public Command driveRobotCommand(DoubleSupplier translationX, DoubleSupplier translationY, DoubleSupplier angularRotationX)
+  {
+    return run(() -> {
+      // Make the robot move
+      swerveDrive.drive(SwerveMath.scaleTranslation(new Translation2d(
+                            translationX.getAsDouble() * swerveDrive.getMaximumVelocity(),
+                            translationY.getAsDouble() * swerveDrive.getMaximumVelocity()), 0.8),
+                        Math.pow(angularRotationX.getAsDouble(), 1) * swerveDrive.getMaximumAngularVelocity(),
+                        false,
                         false);
     });
   }
@@ -696,5 +805,35 @@ public class SwerveSubsystem extends SubsystemBase
   public void addFakeVisionReading()
   {
     swerveDrive.addVisionMeasurement(new Pose2d(3, 3, Rotation2d.fromDegrees(65)), Timer.getFPGATimestamp());
+  }
+
+  public String getAutonomousRoutine()
+  {
+    String alliance = (DriverStation.getAlliance().get() == Alliance.Red)?"rouge ":"bleu ";
+
+    String position = String.valueOf(DriverStation.getLocation().getAsInt());
+    return alliance+position;
+  }
+
+  public double limelightAim()
+  {
+    double targetingAngularVelocity = LimelightHelpers.getTX(CameraConstants.nome) * CameraConstants.kpAim;
+
+    targetingAngularVelocity *= swerveDrive.getMaximumAngularVelocity();
+
+    targetingAngularVelocity *= -1.0;
+
+    return targetingAngularVelocity;
+  }
+
+  public double limelightRange()
+  {
+    double targetAimVelocity = LimelightHelpers.getTY(CameraConstants.nome) * CameraConstants.kpRange;
+
+    targetAimVelocity *= swerveDrive.getMaximumVelocity();
+
+    targetAimVelocity *= -1;
+
+    return targetAimVelocity; 
   }
 }

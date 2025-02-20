@@ -5,18 +5,12 @@
 package frc.robot;
 
 import edu.wpi.first.math.MathUtil;
-import edu.wpi.first.math.geometry.Pose2d;
-import edu.wpi.first.math.geometry.Rotation2d;
-import edu.wpi.first.math.geometry.Translation2d;
-import edu.wpi.first.math.kinematics.ChassisSpeeds;
-import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.Filesystem;
-import edu.wpi.first.wpilibj.RobotBase;
-import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import edu.wpi.first.wpilibj2.command.button.Trigger;
+import frc.robot.Constants.AutonConstants;
 import frc.robot.Constants.OperatorConstants;
 import frc.robot.commands.swervedrive.drivebase.AbsoluteDriveAdv;
 import frc.robot.subsystems.swervedrive.SwerveSubsystem;
@@ -34,7 +28,7 @@ public class RobotContainer
   final CommandXboxController driverXbox = new CommandXboxController(0);
   // The robot's subsystems and commands are defined here...
   private final SwerveSubsystem drivebase = new SwerveSubsystem(new File(Filesystem.getDeployDirectory(),
-                                                                         "swerve/neo"));
+                                                                         "swerve/neo"), driverXbox.button(9));
   // Applies deadbands and inverts controls because joysticks
   // are back-right positive while robot
   // controls are front-left positive
@@ -74,18 +68,18 @@ public class RobotContainer
       () -> MathUtil.applyDeadband(driverXbox.getLeftY() * -Constants.OperatorConstants.limit, OperatorConstants.LEFT_Y_DEADBAND),
       () -> MathUtil.applyDeadband(driverXbox.getLeftX() * -Constants.OperatorConstants.limit, OperatorConstants.LEFT_X_DEADBAND),
       () -> driverXbox.getRightX() * -Constants.OperatorConstants.limit);
-
-  Command driveFieldOrientedDirectAngleSim = drivebase.simDriveCommand(
-      () -> MathUtil.applyDeadband(driverXbox.getLeftY(), OperatorConstants.LEFT_Y_DEADBAND),
-      () -> MathUtil.applyDeadband(driverXbox.getLeftX(), OperatorConstants.LEFT_X_DEADBAND),
-      () -> driverXbox.getRawAxis(2));
+      
+  Command driveRobotOrientated = drivebase.driveRobotCommand(
+      () -> MathUtil.applyDeadband(driverXbox.getLeftY() * -Constants.OperatorConstants.limit, OperatorConstants.LEFT_Y_DEADBAND), 
+      () -> MathUtil.applyDeadband(driverXbox.getLeftX() * -Constants.OperatorConstants.limit, OperatorConstants.LEFT_Y_DEADBAND), 
+      () -> driverXbox.getRightX() * -Constants.OperatorConstants.limit);
 
   /**
    * The container for the robot. Contains subsystems, OI devices, and commands.
    */
   public RobotContainer()
   {
-    // Configure the trigger bindings
+    drivebase.resetOdometry(AutonConstants.initialPositionsByLabels.get(drivebase.getAutonomousRoutine()));
     configureBindings();
   }
 
@@ -98,11 +92,15 @@ public class RobotContainer
    */
   private void configureBindings()
   {
-    driverXbox.a().onTrue(drivebase.driveToDistanceCommand(1, 0.1));
     driverXbox.start().onTrue((Commands.runOnce(drivebase::zeroGyro)));
     driverXbox.back().whileTrue(drivebase.centerModulesCommand());
-    drivebase.setDefaultCommand((DriverStation.isTest())?driveFieldOrientedAnglularVelocity:driveFieldOrientedDirectAngle);
+    drivebase.setDefaultCommand(driveRobotOrientated);
+    //limelightAimTest();
+    //drivebase.setDefaultCommand(driveFieldOrientedAnglularVelocity);
+  }
 
+  private void limelightAimTest(){
+    driverXbox.a().toggleOnTrue(drivebase.driveRobotCommand(()->0.0, ()->0.0, ()->drivebase.limelightAim()));
   }
 
   /**
@@ -112,8 +110,7 @@ public class RobotContainer
    */
   public Command getAutonomousCommand()
   {
-    // An example command will be run in autonomous
-    return drivebase.getAutonomousCommand("New Auto");
+    return drivebase.getAutonomousCommand(drivebase.getAutonomousRoutine());
   }
 
   public void setDriveMode()
